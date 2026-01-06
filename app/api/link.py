@@ -85,7 +85,7 @@ async def link_tiktok_redirect(job_id: str, device=Depends(require_device)) -> R
     job = get_task_status(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="job_not_found")
-    if job.device_id and job.device_id != device["device_id"]:
+    if job.get('device_id') and job.get('device_id') != device.get("device_id"):
         raise HTTPException(status_code=401, detail="invalid_device")
     resp = await archive_client.get_redirect(job_id)
     if resp.status_code == 200:
@@ -108,7 +108,7 @@ async def link_tiktok_redirect(job_id: str, device=Depends(require_device)) -> R
     raise HTTPException(status_code=resp.status_code, detail=resp.text)
 
 
-@router.post(
+@router.get(
     "/code",
     response_model=CodeResponse,
     responses={401: {"model": ErrorResponse}},
@@ -233,9 +233,9 @@ async def join_waitlist(payload: WaitlistRequest) -> Response:
     user = get_user(payload.app_user_id)
     if not user:
         raise HTTPException(status_code=404, detail="not_found")
-    user.waitlist_opt_in = not bool(user.waitlist_opt_in)
-    user.waitlist_opt_in_at = datetime.utcnow() if user.waitlist_opt_in else None
-    update_user_waitlist(user.app_user_id, waitlist_opt_in=user.waitlist_opt_in, waitlist_opt_in_at=user.waitlist_opt_in_at)
+    new_waitlist_opt_in = not bool(user.get('waitlist_opt_in'))
+    new_waitlist_opt_in_at = datetime.utcnow() if user.get('waitlist_opt_in') else None
+    update_user_waitlist(payload.app_user_id, waitlist_opt_in=new_waitlist_opt_in,waitlist_opt_in_at=new_waitlist_opt_in_at)
     return Response(status_code=204)
 
 @router.get(
@@ -249,20 +249,20 @@ async def wrapped_status(
  
     if not task:
         raise HTTPException(status_code=404, detail="not_found")
-    if task.status != "ready" or not task.payload:
+    if task.get('status') != "ready" or not task.payload:
         return WrappedStatusResponse(
             status="pending",
-            wrapped_run_id=task.id,
+            wrapped_run_id=task.get('task_id'),
             wrapped=None,
             queue_position=None,
             queue_eta_seconds=None,
             queue_status="pending",
         )
-    return WrappedStatusResponse(status="ready", wrapped_run_id=task.id, wrapped=task)
+    return WrappedStatusResponse(status="ready", wrapped_run_id=task.get('task_id'), wrapped=task)
 
 
 @router.post(
-    "/wrapped/request",
+    "/wrapped-request",
     response_model=WrappedEnqueueResponse,
     responses={401: {"model": ErrorResponse}},
 )

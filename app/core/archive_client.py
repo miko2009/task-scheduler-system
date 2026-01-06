@@ -25,6 +25,8 @@ class ArchiveClient:
         body: JSONDict = {}
         if anchor_token:
             body["anchor_token"] = anchor_token
+        headers = self._headers()
+        headers['Content-type'] = "application/json"
         return call_api_with_retry("auth_start", "", api_url, body, headers=self._headers())
     
     async def get_redirect(self, archive_job_id: str) -> httpx.Response:
@@ -32,12 +34,6 @@ class ArchiveClient:
         body: JSONDict = {"archive_job_id": archive_job_id}
         return call_api_with_retry("get_redirect", "", api_url, body, headers=self._headers())
     async def get_authorization_code(self, archive_job_id: str) -> httpx.Response:
-        return {
-            "archive_job_id": "abc",
-            "expires_at": "2026-01-10 20:00:01",
-            "queue_position": 56,
-        }
-
         api_url = self.base + Settings.ARCHIVE_AUTHENTICATE_PATH
         body: JSONDict = {"archive_job_id": archive_job_id}
         return call_api_with_retry("get_authorization_code", "", api_url, body, headers=self._headers())

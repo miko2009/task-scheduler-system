@@ -46,7 +46,7 @@ async def link_tiktok_start(device=Depends(require_device)) -> LinkStartResponse
     print(f"Starting link for device: {device}")
     res = await archive_client.start_xordi_auth(anchor_token=None)
 
-    task_id = create_task(res.get("archive_job_id", device["device_id"]))
+    task_id = create_task(res.get("archive_job_id"), device["device_id"])
     print(f"task created: {task_id}")
     # add task to verify queue
     task_data = {
@@ -225,7 +225,7 @@ async def test_api(request: Request):
     return {"code": 200, "msg": "test successful"}
 
 
-@app.post("/waitlist", status_code=204)
+@router.post("/waitlist", status_code=204)
 async def join_waitlist(payload: WaitlistRequest) -> Response:
     user = get_user(payload.app_user_id)
     if not user:
@@ -258,7 +258,7 @@ async def wrapped_status(
     return WrappedStatusResponse(status="ready", wrapped_run_id=task.id, wrapped=task)
 
 
-@app.post(
+@router.post(
     "/wrapped/request",
     response_model=WrappedEnqueueResponse,
     responses={401: {"model": ErrorResponse}},

@@ -3,23 +3,22 @@ from app.core.database import get_mysql_conn
 from app.core.utils import generate_task_id
 
 # create task
-def create_task(user_id, ip_address):
+def create_task(archive_job_id:str, device_id:str="") -> str:
     conn = None
     try:
         conn = get_mysql_conn()
-        print(f"create user (if not exists): user_id={user_id}, ip_address={ip_address}")
-        print(conn)
-        with conn.cursor() as cursor:
-            cursor.execute("INSERT IGNORE INTO users (user_id, ip_address) VALUES (%s, %s)",
-                        (user_id, ip_address))
+        # print(f"create user (if not exists): user_id={user_id}, ip_address={ip_address}")
+        # print(conn)
+        # with conn.cursor() as cursor:
+        #     cursor.execute("INSERT IGNORE INTO users (user_id, ip_address) VALUES (%s, %s)",
+        #                 (user_id, ip_address))
         
         # generate task ID
-        task_id = generate_task_id()
         with conn.cursor() as cursor:
             cursor.execute("""
-                INSERT INTO tasks (task_id, user_id, status)
+                INSERT INTO tasks (task_id, device_id, status)
                 VALUES (%s, %s, 'pending')
-            """, (task_id, user_id))
+            """, (archive_job_id, device_id))
         conn.commit()
     except Exception as e:
         print(f"create task failed: {e}")
@@ -28,7 +27,7 @@ def create_task(user_id, ip_address):
         if conn:
             conn.close()
 
-    return task_id
+    return archive_job_id
 
 # query task status
 def get_task_status(task_id):
@@ -37,10 +36,7 @@ def get_task_status(task_id):
         conn = get_mysql_conn()
         with conn.cursor() as cursor:
             cursor.execute("""
-                SELECT task_id, user_id, status, region_verify_status, region_verify_result,
-                    region_retry_count, collect_total, collect_completed, collect_page,
-                    collect_status, analysis_status, analysis_result, error_msg,
-                    create_time, update_time
+                SELECT *
                 FROM tasks WHERE task_id = %s
             """, (task_id,))
             task = cursor.fetchone()
@@ -105,3 +101,52 @@ def update_verify_task_status(task_id):
         if conn:
             conn.close()
     return new_status
+def update_task_status_user_id(task_id: str, status: str, app_user_id: str = ""):
+    conn = None
+    try:
+        conn = get_mysql_conn()
+        with conn.cursor() as cursor:
+            sql = "UPDATE tasks SET status = %s, app_user_id = %s WHERE task_id = %s"
+            params = [status, app_user_id, task_id]
+            cursor.execute(sql, tuple(params))
+        conn.commit()
+    except Exception as e:
+        print(f"update task failed: {e}")
+        raise e
+    finally:
+        if conn:
+            conn.close()
+
+
+def update_task_email_status(task_id: str, status: str):
+    conn = None
+    try:
+        conn = get_mysql_conn()
+        with conn.cursor() as cursor:
+            sql = "UPDATE tasks SET email_status = %s WHERE task_id = %s"
+            params = [status, task_id]
+            cursor.execute(sql, tuple(params))
+        conn.commit()
+    except Exception as e:
+        print(f"update task email status failed: {e}")
+        raise e
+    finally:
+        if conn:
+            conn.close()
+
+def get_task_by_user_id(app_user_id: str):
+    conn = None
+    try:
+        conn = get_mysql_conn()
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT * FROM tasks WHERE app_user_id = %s ORDER BY create_time DESC
+            """, (app_user_id,))
+            task = cursor.fetchone()
+    except Exception as e:
+        print(f"get tasks by user id failed: {e}")
+        raise e
+    finally:
+        if conn:
+            conn.close()
+    return task

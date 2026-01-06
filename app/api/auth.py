@@ -1,9 +1,12 @@
 from datetime import datetime, timedelta
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Response, status, Header
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from app.core.config import settings
+from app.core.schema import ErrorResponse, RegisterEmailRequest
+from app.models.user import get_user, update_user_email
+from app.models.app_session import parse_bearer, validate
 
 router = APIRouter()
 
@@ -19,6 +22,17 @@ fake_users_db = {
         "disabled": False,
     }
 }
+
+def require_session(
+    authorization: str = Header(..., alias="Authorization"),
+    device_id: str = Header(..., alias="X-Device-Id"),
+    platform: str = Header(..., alias="X-Platform"),
+    app_version: str = Header(..., alias="X-App-Version"),
+    os_version: str = Header(..., alias="X-OS-Version"),
+):
+    token = parse_bearer(authorization)
+    rec = validate(token, device_id=device_id)
+    return rec
 
 # verify password
 def verify_password(plain_password, hashed_password):
@@ -70,3 +84,12 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
         data={"sub": user["username"]}, expires_delta=access_token_expires
     )
     return {"access_token": access_token, "token_type": "bearer"}
+
+@router.post("/register-email", status_code=204, responses={401: {"model": ErrorResponse}})
+async def register_email(payload: RegisterEmailRequest, session=Depends(require_session)) -> Response:
+    user = get_user(session.app_user_id)
+    if not user:
+        raise HTTPException(status_code=400, detail="user_not_found")
+
+    update_user_email(session.app_user_id, payload.email)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

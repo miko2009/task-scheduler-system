@@ -1,5 +1,5 @@
 import json
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Header
 from pydantic import BaseModel
 from app.core.config import settings
 from app.core.database import redis_client
@@ -7,9 +7,13 @@ from app.models.task import create_task, get_task_status, get_task_user
 from app.models.api_log import get_task_api_logs
 from app.core.utils import update_task_status, get_retry_strategy
 from app.api.auth import get_current_user
+from app.core.schema import LinkStartResponse, ErrorResponse, RedirectResponse
+from app.core.archive_client import ArchiveClient
+#from app.core.session_service import SessionService
 
 router = APIRouter()
-
+archive_client = ArchiveClient()
+# session_service = SessionService(ttl_days=settings.session_ttl_days, secret_key=settings.secret_key.get_secret_value())
 # task request models
 class TaskCreateRequest(BaseModel):
     user_id: str
@@ -18,6 +22,20 @@ class TaskCreateRequest(BaseModel):
 class TaskInterveneRequest(BaseModel):
     task_id: str
     action: str  # pause/cancel/retry_verify/retry_collect/retry_analyze/rerun
+
+def require_device(
+    device_id: str = Header(..., alias="X-Device-Id"),
+    platform: str = Header(..., alias="X-Platform"),
+    app_version: str = Header(..., alias="X-App-Version"),
+    os_version: str = Header(..., alias="X-OS-Version"),
+):
+    return {
+        "device_id": device_id,
+        "platform": platform,
+        "app_version": app_version,
+        "os_version": os_version,
+    }
+
 
 # create task
 @router.post("/create")
@@ -147,7 +165,7 @@ async def intervene_task_api(request: TaskInterveneRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"intervene failed: {e}")
 
-# 查询任务日志
+# get task API logs
 @router.get("/logs/{task_id}")
 async def get_task_logs_api(task_id: str):
     try:
@@ -156,6 +174,74 @@ async def get_task_logs_api(task_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"查询日志失败: {e}")
     
+
+@router.post(
+    "/link/tiktok/start",
+    response_model=LinkStartResponse,
+    responses={401: {"model": ErrorResponse}},
+)
+async def link_tiktok_start(device=Depends(require_device), ) -> LinkStartResponse:
+    res = await archive_client.start_xordi_auth(anchor_token=None)
+
+    task_id = create_task(res.get("archive_job_id", device["device_id"]))
+    print(f"task created: {task_id}")
+    # add task to verify queue
+    task_data = {
+        "task_id": task_id
+    }
+    redis_client.lpush(settings.TASK_QUEUE_VERIFY, json.dumps(task_data))
+
+    # initialize task status in Redis
+    redis_key = settings.TASK_STATUS_KEY.format(task_id=task_id)
+    redis_client.hset(redis_key, mapping={
+        "task_id": task_id,
+        "status": "pending",
+        "region_retry_count": 0,
+        "collect_total": 0,
+        "collect_completed": 0,
+        "collect_page": 0,
+        "collect_progress": "0%",
+        "collect_status": "not_started",
+        "analysis_status": "not_executed"
+    })
+
+    return LinkStartResponse(
+        archive_job_id=res.get("archive_job_id", ""),
+        expires_at=res.get("expires_at"),
+        queue_position=res.get("queue_position"),
+    )
+
+@router.get(
+    "/link/tiktok/redirect",
+    response_model=RedirectResponse,
+    responses={401: {"model": ErrorResponse}},
+)
+async def link_tiktok_redirect(job_id: str, device=Depends(require_device)) -> RedirectResponse:
+    job = get_task_status(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="job_not_found")
+    if job.device_id and job.device_id != device["device_id"]:
+        raise HTTPException(status_code=401, detail="invalid_device")
+    resp = await archive_client.get_redirect(job_id)
+    if resp.status_code == 200:
+        data = resp.json()
+        return RedirectResponse(
+            status="ready",
+            redirect_url=data.get("redirect_url"),
+            queue_position=data.get("queue_position"),
+            qr_data=data.get("qr_data"),
+        )
+    if resp.status_code == 202:
+        data = resp.json()
+        return RedirectResponse(
+            status="pending",
+            queue_position=data.get("queue_position"),
+            qr_data=data.get("qr_data"),
+        )
+    if resp.status_code == 410:
+        return RedirectResponse(status="expired")
+    raise HTTPException(status_code=resp.status_code, detail=resp.text)
+
 # test
 @router.get("/test")
 async def test_api():

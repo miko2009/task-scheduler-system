@@ -6,13 +6,82 @@ from app.core.config import settings
 from app.core.database import redis_client, get_task_lock, get_mysql_conn
 from app.core.utils import call_api_with_retry, update_task_status, update_collect_progress
 from app.models.browse_record import batch_insert_browse_records
-
+from app.models.user import get_user
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from app.core.emailer import Emailer
+from app.core.archive_client import ArchiveClient
 # settings import
 # force add project root to Python path (outermost task_scheduler)
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
 # browse records collect worker
-def collect_worker():
+import asyncio
+archive_client = ArchiveClient()
+
+def _get_emailer() -> Emailer:
+    global _emailer
+    if _emailer is None:
+        _emailer = Emailer()
+    return _emailer
+
+
+def _safe_zone(tz_name: Optional[str]) -> ZoneInfo:
+    if not tz_name:
+        return ZoneInfo("UTC")
+    try:
+        return ZoneInfo(tz_name)
+    except ZoneInfoNotFoundError:
+        return ZoneInfo("UTC")
+
+
+def _to_dt(val: Optional[str]) -> Optional[datetime]:
+    if not val:
+        return None
+    try:
+        return datetime.fromisoformat(val.replace("Z", "+00:00"))
+    except Exception:
+        return None
+async def _fetch_month(sec_user_id: str, month_start_ms: int, month_end_ms: int) -> List[Dict[str, Any]]:
+        cursor = str(month_start_ms)
+        rows: List[Dict[str, Any]] = []
+        start_resp = await archive_client.start_watch_history(
+            sec_user_id=sec_user_id, limit=900, max_pages=50, cursor=cursor
+        )
+        if not start_resp:
+            return rows
+        data_job_id = start_resp.get("data_job_id")
+        if not data_job_id:
+            return rows
+        finalize_resp = await archive_client.finalize_watch_history(
+            data_job_id=data_job_id, include_rows=True, return_limit=1)
+        if not finalize_resp:
+            return rows
+        before = None
+        while True:
+            resp = await archive_client.get_watch_history(sec_user_id=sec_user_id, limit=900, before=before)
+            if not resp or "items" not in resp:
+                break
+            batch = resp.get("items") or []
+            if not batch:
+                break
+            for item in batch:
+                watched_at = _to_dt(item.get("watched_at"))
+                if watched_at:
+                    ts_ms = int(watched_at.timestamp() * 1000)
+                    if ts_ms >= month_end_ms:
+                        continue
+                    if ts_ms < month_start_ms:
+                        return rows
+                rows.append(item)
+            before = resp.get("next_before")
+            if not before:
+                break
+        return rows
+
+
+async def collect_worker():
     print("collect Worker started")
     collect_queue = settings.TASK_QUEUE_COLLECT
     retry_queue = settings.TASK_QUEUE_RETRY
@@ -31,12 +100,12 @@ def collect_worker():
 
             # if from retry queue and retry_type is collect, get user_id from DB if not provided
             if not user_id:
-                conn = get_mysql_conn()
-                with conn.cursor() as cursor:
-                    cursor.execute("SELECT user_id FROM tasks WHERE task_id = %s", (task_id,))
-                    user_id = cursor.fetchone()["user_id"]
-                conn.close()
-
+                continue
+            
+            user = get_user(user_id)  # ensure user exists
+            if not user or user.latest_sec_user_id is None:
+                print(f"collection task:{task_id} user {user_id} not found, skip")
+                continue
             # get distributed lock
             lock = get_task_lock(task_id)
             if not lock.acquire(blocking=False):
@@ -50,76 +119,33 @@ def collect_worker():
                     cursor.execute("SELECT status FROM tasks WHERE task_id = %s", (task_id,))
                     task_status = cursor.fetchone()["status"]
                 conn.close()
-                
+
                 if task_status in ["paused", "cancelled"]:
-                    print(f"collection task {task_id} status is {task_status}, stop")
-                    return
+                    print(f"collection task:{task_id} status is {task_status}, stop collection")
+                    continue
+                sec_user_id = user.latest_sec_user_id
+                rows: List[Dict[str, Any]] = []
+                month_starts = [(2025, m, 1) for m in range(1, 13)]
+                idx = 0
+                while idx < len(month_starts):
+                    batch = month_starts[idx : idx + 10]  # cap to Archive per-account queue limit
+                    coros = []
+                    for year, month, day in batch:
+                        start_dt = datetime(year, month, day)
+                        end_dt = datetime(year + (1 if month == 12 else 0), 1 if month == 12 else month + 1, 1)
+                        start_ms = int(start_dt.timestamp() * 1000)
+                        end_ms = int(end_dt.timestamp() * 1000)
+                        await coros.append(_fetch_month(sec_user_id, start_ms, end_ms))
+                    # launch bounded concurrent fetches within the batch
+                    batch_rows = await asyncio.gather(*coros)
+                    for r in batch_rows:
+                        rows.extend(r)
+                    idx += len(batch)
+                    await asyncio.sleep(1)  # 1 start/sec pacing between batches
 
-                # step 1: get total count
-                api_url = settings.BROWSE_COLLECT_API_URL
-                params = {"task_id": task_id, "user_id": user_id, "action": "get_total"}
-                try:
-                    total_result = call_api_with_retry("browse_collect", task_id, api_url, params)
-                    total_count = total_result.get("total_count", 0)
-                    if total_count == 0:
-                        update_collect_progress(task_id, 0, 0)
-                        update_task_status(task_id, "completed", collect_status="completed")
-                        print(f"task {task_id} no records to collect, marked as completed")
-                        return
-                    
-                    # set task status to collecting
-                    update_task_status(task_id, "collecting", collect_total=total_count, collect_status="collecting")
-                except Exception as e:
-                    update_task_status(task_id, "failed", collect_status="failed", error_msg=f"get total count failed: {e}")
-                    print(f"collection task:{task_id}: error: {e}")
-                    return
-
-                # step 2: paginated collect browse records
-                page = 1
-                while True:
-                    # check task status before each page
-                    conn = get_mysql_conn()
-                    with conn.cursor() as cursor:
-                        cursor.execute("SELECT status FROM tasks WHERE task_id = %s", (task_id,))
-                        current_status = cursor.fetchone()["status"]
-                    conn.close()
-                    
-                    if current_status in ["paused", "cancelled"]:
-                        print(f"task:{task_id} status is {current_status}, stop paginated collect")
-                        break
-
-                    # collect one page
-                    params = {
-                        "task_id": task_id,
-                        "user_id": user_id,
-                        "action": "collect",
-                        "page": page,
-                        "page_size": settings.COLLECT_PAGE_SIZE
-                    }
-                    try:
-                        collect_result = call_api_with_retry("browse_collect", task_id, api_url, params)
-                        records = collect_result.get("records", [])
-                        if not records:
-                            break
-
-                        # batch insert browse records
-                        batch_insert_browse_records(task_id, user_id, records)
-
-                        # update collect progress
-                        collected_count = len(records)
-                        is_completed = update_collect_progress(task_id, page, collected_count)
-
-                        print(f"collection task {task_id} page {page} completed, total {collected_count} records")
-
-                        if is_completed:
-                            break
-                        
-                        page += 1
-                        time.sleep(0.1)  # avoid hitting API rate limits
-                    except Exception as e:
-                        update_task_status(task_id, "failed", collect_status="failed", error_msg=f"paginated collect failed: {e}")
-                        print(f"collection task {task_id} paginated collect failed: {e}")
-                        break
+                redis_client.lpush(settings.TASK_QUEUE_ANALYZE, json.dumps({
+                    "task_id": task_id, "user_id": user_id
+                }))
             except Exception as e:
                 update_task_status(task_id, "failed", collect_status="failed", error_msg=f"collection exception: {e}")
                 print(f"collection task {task_id} exception: {e}")
@@ -130,4 +156,4 @@ def collect_worker():
         time.sleep(0.01)
 
 if __name__ == "__main__":
-    collect_worker()
+      asyncio.run(collect_worker())

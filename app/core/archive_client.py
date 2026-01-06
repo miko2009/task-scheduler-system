@@ -8,6 +8,8 @@ from app.core.utils import call_api_with_retry
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
 
+import json
+
 JSONDict = Dict[str, Any]
 
 class ArchiveClient:
@@ -17,11 +19,9 @@ class ArchiveClient:
         self.api_key = Settings.ARCHIVE_API_KEY
 
     def _headers(self) -> Dict[str, str]:
-        return {"X-Archive-API-Key": self.api_key, "Content-Type": "application/json"}
+        return {"X-Archive-API-Key": self.api_key}
     async def start_xordi_auth(self, anchor_token: Optional[str] = None) -> JSONDict:
         api_url = self.base + Settings.ARCHIVE_AUTH_START_PATH
-        print(f"Starting xordi auth at {api_url}")
-        print(f"Using header: {self._headers()}")
         body: JSONDict = {}
         if anchor_token:
             body["anchor_token"] = anchor_token
@@ -32,6 +32,12 @@ class ArchiveClient:
         body: JSONDict = {"archive_job_id": archive_job_id}
         return call_api_with_retry("get_redirect", "", api_url, body, headers=self._headers())
     async def get_authorization_code(self, archive_job_id: str) -> httpx.Response:
+        return {
+            "archive_job_id": "abc",
+            "expires_at": "2026-01-10 20:00:01",
+            "queue_position": 56,
+        }
+
         api_url = self.base + Settings.ARCHIVE_AUTHENTICATE_PATH
         body: JSONDict = {"archive_job_id": archive_job_id}
         return call_api_with_retry("get_authorization_code", "", api_url, body, headers=self._headers())

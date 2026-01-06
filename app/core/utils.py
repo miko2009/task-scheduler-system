@@ -114,11 +114,14 @@ def call_api_with_retry(api_type, task_id, url, params, headers=None, timeout=No
             response_code = response.status_code
             response_data = response.json() if response.status_code == 200 else {}
             
-            if response.status_code != 200:
+            if response.status_code > 300:
                 status = "failed"
                 error_detail = f"status code: {response.status_code}, content: {response.text}"
                 raise Exception(error_detail)
-            return response_data
+            if headers.get('Content-type') == 'application/json':
+                return response_data
+            else:
+                return response
         except requests.exceptions.Timeout:
             status = "timeout"
             error_detail = f"timeout ({timeout} seconds)"

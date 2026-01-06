@@ -46,12 +46,13 @@ async def link_tiktok_start(device=Depends(require_device)) -> LinkStartResponse
     print(f"Starting link for device: {device}")
     res = await archive_client.start_xordi_auth(anchor_token=None)
 
-    task_id = create_task(res.get("archive_job_id"), device["device_id"])
+    device_id = device.get('device_id')
+    task_id = create_task(res.get("archive_job_id"), device_id)
     print(f"task created: {task_id}")
     # add task to verify queue
     task_data = {
         "task_id": task_id,
-        "device_id": device[":device_id"]
+        "device_id": device_id
     }
     redis_client.lpush(settings.TASK_QUEUE_VERIFY, json.dumps(task_data))
 
@@ -107,30 +108,30 @@ async def link_tiktok_redirect(job_id: str, device=Depends(require_device)) -> R
     raise HTTPException(status_code=resp.status_code, detail=resp.text)
 
 
-@router.get(
+@router.post(
     "/code",
     response_model=CodeResponse,
     responses={401: {"model": ErrorResponse}},
 )
 async def link_tiktok_code(job_id: str, device=Depends(require_device)) -> CodeResponse:
+    device_id = device.get('device_id')
     job = get_task_status(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="job_not_found")
-    if job.device_id and job.device_id != device["device_id"]:
+    if job.get('device_id') and job.get('device_id') != device_id:
         raise HTTPException(status_code=401, detail="invalid_device")
     resp = await archive_client.get_authorization_code(job_id)
+
     if resp.status_code == 200:
-        data = resp.json()
         return CodeResponse(
             status="ready",
-            authorization_code=data.get("authorization_code"),
-            expires_at=data.get("expires_at"),
+            authorization_code=resp.get("authorization_code"),
+            expires_at=resp.get("expires_at"),
         )
     if resp.status_code == 202:
-        data = resp.json()
         return CodeResponse(
             status="pending",
-            queue_position=data.get("queue_position"),
+            queue_position=resp.get("queue_position"),
         )
     if resp.status_code == 410:
         return CodeResponse(status="expired")
@@ -146,25 +147,27 @@ async def link_tiktok_finalize(
     payload: FinalizeRequest, device=Depends(require_device)
 ) -> FinalizeResponse:
     job = get_task_status(payload.archive_job_id)
+    device_id = job.get('device_id')
+    app_user_id = job.get('app_user_id')
     if not job:
         raise HTTPException(status_code=404, detail="job_not_found")
-    if job.device_id and job.device_id != device["device_id"]:
+    if device_id and device_id != device.get('device_id'):
         raise HTTPException(status_code=401, detail="invalid_device")
     anchor_token = None
-    if job.app_user_id:
-        existing_user = get_user(job.app_user_id)
-        anchor_token = existing_user.latest_anchor_token if existing_user else None
+    if app_user_id:
+        existing_user = get_user(app_user_id)
+        anchor_token = existing_user.get('latest_anchor_token') if existing_user else None
     data = await archive_client.finalize_xordi(
         archive_job_id=payload.archive_job_id,
         authorization_code=payload.authorization_code,
         anchor_token=anchor_token,
     )
     # Bind to canonical app_user_id derived from archive_user_id
-    final_app_user_id = data.get("archive_user_id") or (job.app_user_id or str(uuid4()))
+    final_app_user_id = data.get("archive_user_id") or (job.get('app_user_id') or str(uuid4()))
     canonical_user = get_user(final_app_user_id)
     if not canonical_user:
         canonical_user = get_user(job.app_user_id)
-    previous_sec_user_id = canonical_user.latest_sec_user_id
+    previous_sec_user_id = canonical_user.get('latest_sec_user_id')
 
     # archive_user_id
     canonical_user.archive_user_id = data.get("archive_user_id")
@@ -189,10 +192,10 @@ async def link_tiktok_finalize(
 
     token, expires_at = create_or_rotate(
         app_user_id=canonical_user.app_user_id,
-        device_id=device["device_id"],
-        platform=device["platform"],
-        app_version=device["app_version"],
-        os_version=device["os_version"],
+        device_id=device.get("device_id"),
+        platform=device.get("platform"),
+        app_version=device.get("app_version"),
+        os_version=device.get("os_version"),
     )
     # Auto-run availability check and enqueue wrapped pipeline on success
     await verify_user_region(canonical_user, auto_enqueue=True)
@@ -213,7 +216,7 @@ async def link_tiktok_finalize(
     responses={401: {"model": ErrorResponse}},
 )
 async def link_tiktok_verify_region(session=Depends(require_session)) -> VerifyRegionResponse:
-    user = get_user(session.app_user_id)
+    user = get_user(session.get("app_user_id"))
     if not user:
         raise HTTPException(status_code=400, detail="user_not_found")
     status_value, attempts, last_error = await verify_user_region(user, auto_enqueue=True)

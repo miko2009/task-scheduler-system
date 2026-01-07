@@ -83,7 +83,7 @@ def region_verify_retry_callback(retry_state: RetryCallState):
                 conn.close()
 
 # call external API with retry logic
-def call_api_with_retry(api_type, task_id, url, params, headers=None, timeout=None):
+def call_api_with_retry(api_type, task_id, url, method="GET",  params = None, headers=None, timeout=None):
     strategy = get_retry_strategy(api_type)
     max_retry = strategy["max_retry_count"]
     initial_delay = strategy["initial_delay"]
@@ -110,18 +110,20 @@ def call_api_with_retry(api_type, task_id, url, params, headers=None, timeout=No
         nonlocal retry_count
         retry_count += 1
         try:
-            response = requests.post(url, json=params, headers=headers, timeout=timeout)
+            if method.lower() == "get":
+                response = requests.get(url, params, headers=headers, timeout=timeout)
+            else:
+                response = requests.post(url, json=params, headers=headers, timeout=timeout)
             response_code = response.status_code
-            response_data = response.json() if response.status_code == 200 else {}
+            response_data = response.json()
             
             if response.status_code > 300:
                 status = "failed"
                 error_detail = f"status code: {response.status_code}, content: {response.text}"
                 raise Exception(error_detail)
-            if headers.get('Content-type') == 'application/json':
-                return response_data
-            else:
-                return response
+
+            return response_data, response.status_code
+       
         except requests.exceptions.Timeout:
             status = "timeout"
             error_detail = f"timeout ({timeout} seconds)"

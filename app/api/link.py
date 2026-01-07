@@ -43,12 +43,9 @@ def require_device(
     }
 @router.post("/start")
 async def link_tiktok_start(device=Depends(require_device)) -> LinkStartResponse:
-    print(f"Starting link for device: {device}")
-    res = await archive_client.start_xordi_auth(anchor_token=None)
-
+    resp, status_code= await archive_client.start_xordi_auth(anchor_token=None)
     device_id = device.get('device_id')
-    task_id = create_task(res.get("archive_job_id"), device_id)
-    print(f"task created: {task_id}")
+    task_id = create_task(resp.get("archive_job_id"), device_id)
     # add task to verify queue
     task_data = {
         "task_id": task_id,
@@ -71,9 +68,9 @@ async def link_tiktok_start(device=Depends(require_device)) -> LinkStartResponse
     })
 
     return LinkStartResponse(
-        archive_job_id=res.get("archive_job_id", ""),
-        expires_at=res.get("expires_at"),
-        queue_position=res.get("queue_position"),
+        archive_job_id=resp.get("archive_job_id", ""),
+        expires_at=resp.get("expires_at"),
+        queue_position=resp.get("queue_position"),
     )
 
 @router.get(
@@ -87,21 +84,19 @@ async def link_tiktok_redirect(job_id: str, device=Depends(require_device)) -> R
         raise HTTPException(status_code=404, detail="job_not_found")
     if job.get('device_id') and job.get('device_id') != device.get("device_id"):
         raise HTTPException(status_code=401, detail="invalid_device")
-    resp = await archive_client.get_redirect(job_id)
-    if resp.status_code == 200:
-        data = resp.json()
+    resp, status_code = await archive_client.get_redirect(job_id)
+    if status_code == 200:
         return RedirectResponse(
             status="ready",
-            redirect_url=data.get("redirect_url"),
-            queue_position=data.get("queue_position"),
-            qr_data=data.get("qr_data"),
+            redirect_url=resp.get("redirect_url"),
+            queue_position=resp.get("queue_position"),
+            qr_data=resp.get("qr_data"),
         )
-    if resp.status_code == 202:
-        data = resp.json()
+    if status_code == 202:
         return RedirectResponse(
             status="pending",
-            queue_position=data.get("queue_position"),
-            qr_data=data.get("qr_data"),
+            queue_position=resp.get("queue_position"),
+            qr_data=resp.get("qr_data"),
         )
     if resp.status_code == 410:
         return RedirectResponse(status="expired")
@@ -120,22 +115,21 @@ async def link_tiktok_code(job_id: str, device=Depends(require_device)) -> CodeR
         raise HTTPException(status_code=404, detail="job_not_found")
     if job.get('device_id') and job.get('device_id') != device_id:
         raise HTTPException(status_code=401, detail="invalid_device")
-    resp = await archive_client.get_authorization_code(job_id)
-
-    if resp.status_code == 200:
+    resp,status_code = await archive_client.get_authorization_code(job_id)
+    if status_code == 200:
         return CodeResponse(
             status="ready",
             authorization_code=resp.get("authorization_code"),
             expires_at=resp.get("expires_at"),
         )
-    if resp.status_code == 202:
+    if status_code == 202:
         return CodeResponse(
             status="pending",
             queue_position=resp.get("queue_position"),
         )
-    if resp.status_code == 410:
+    if status_code == 410:
         return CodeResponse(status="expired")
-    raise HTTPException(status_code=resp.status_code, detail=resp.text)
+    raise HTTPException(status_code=status_code, detail=resp)
 
 
 @router.post(
@@ -157,7 +151,7 @@ async def link_tiktok_finalize(
     if app_user_id:
         existing_user = get_user(app_user_id)
         anchor_token = existing_user.get('latest_anchor_token') if existing_user else None
-    data = await archive_client.finalize_xordi(
+    data, status_code = await archive_client.finalize_xordi(
         archive_job_id=payload.archive_job_id,
         authorization_code=payload.authorization_code,
         anchor_token=anchor_token,

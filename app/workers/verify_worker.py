@@ -24,7 +24,7 @@ def verify_user_region(task_id, user_id, ip_address):
     user = get_user(user_id)
     # call region verify API
     try:
-       start_resp = archive_client.start_watch_history(user.latest_sec_user_id, limit=1, max_pages=1, cursor=None)
+       start_resp, status_code = archive_client.start_watch_history(user.latest_sec_user_id, limit=1, max_pages=1, cursor=None)
     except Exception as e:
         return "timeout" if "timeout" in str(e) else "failed", {}, str(e)
 

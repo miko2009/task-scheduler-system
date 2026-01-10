@@ -156,51 +156,52 @@ async def link_tiktok_finalize(
         authorization_code=payload.authorization_code,
         anchor_token=anchor_token,
     )
+    print('data',data)
     # Bind to canonical app_user_id derived from archive_user_id
     final_app_user_id = data.get("archive_user_id") or (job.get('app_user_id') or str(uuid4()))
     canonical_user = get_user(final_app_user_id)
     if not canonical_user:
-        canonical_user = get_user(job.app_user_id)
+        canonical_user = get_user(job.get("app_user_id"))
     previous_sec_user_id = canonical_user.get('latest_sec_user_id')
 
     # archive_user_id
-    canonical_user.archive_user_id = data.get("archive_user_id")
+    canonical_user['archive_user_id'] = data.get("archive_user_id")
     # lastest_sec_user_id
-    canonical_user.latest_sec_user_id = data.get("provider_unique_id")
+    canonical_user['latest_sec_user_id'] = data.get("provider_unique_id")
     platform_username = data.get("platform_username")
 
     if platform_username:
-        canonical_user.platform_username = platform_username
-    canonical_user.time_zone = payload.time_zone or canonical_user.time_zone
+        canonical_user['platform_username'] = platform_username
+    canonical_user['time_zone'] = payload.time_zone or canonical_user['time_zone']
     new_anchor = data.get("anchor_token")
     if new_anchor or anchor_token:
-        canonical_user.latest_anchor_token = new_anchor or anchor_token
-    if previous_sec_user_id != canonical_user.latest_sec_user_id:
-        canonical_user.is_watch_history_available = "unknown"
-    update_user(canonical_user.app_user_id, data.get("archive_user_id"), data.get("provider_unique_id"), platform_username, payload.time_zone, canonical_user.latest_anchor_token, canonical_user.is_watch_history_available)
+        canonical_user['latest_anchor_token'] = new_anchor or anchor_token
+    if previous_sec_user_id != canonical_user['latest_sec_user_id']:
+        canonical_user['is_watch_history_available'] = "unknown"
+    update_user(canonical_user.get('app_user_id'), data.get("archive_user_id"), data.get("provider_unique_id"), platform_username, payload.time_zone, canonical_user['latest_anchor_token'], canonical_user['is_watch_history_available'])
 
 
     # Rebind auth job to canonical user if it exists
     if job:
-        update_task_status_user_id(job.task_id, "finalized", canonical_user.app_user_id)
+        update_task_status_user_id(job.get('task_id'), "finalized", canonical_user.get('app_user_id'))
 
     token, expires_at = create_or_rotate(
-        app_user_id=canonical_user.app_user_id,
+        app_user_id=canonical_user.get('app_user_id'),
         device_id=device.get("device_id"),
         platform=device.get("platform"),
         app_version=device.get("app_version"),
         os_version=device.get("os_version"),
     )
     # Auto-run availability check and enqueue wrapped pipeline on success
-    await verify_user_region(canonical_user, auto_enqueue=True)
+    await verify_user_region(canonical_user, payload.archive_job_id, auto_enqueue=True)
     return FinalizeResponse(
         archive_user_id=data.get("archive_user_id", ""),
         sec_user_id=data.get("provider_unique_id", ""),
-        anchor_token=canonical_user.latest_anchor_token,
-        app_user_id=canonical_user.app_user_id,
+        anchor_token=canonical_user.get('latest_anchor_token'),
+        app_user_id=canonical_user.get('app_user_id'),
         token=token,
         expires_at=expires_at,
-        platform_username=canonical_user.platform_username,
+        platform_username=canonical_user.get('platform_username'),
     )
 
 
@@ -219,6 +220,9 @@ async def link_tiktok_verify_region(session=Depends(require_session)) -> VerifyR
 # test
 @router.get("/test")
 async def test_api(request: Request):
+    redis_client.lpush(settings.TASK_QUEUE_EMAIL_SEND, json.dumps({
+        "task_id": "aj_3Rsh8RWqU29KPgIm84HFzQ", "user_id": "abc"
+    }))
     return {"code": 200, "msg": "test successful"}
 
 

@@ -3,8 +3,20 @@ import time
 import os
 import sys
 import multiprocessing
+import asyncio
+import httpx
+import re
+from typing import Any, Dict, List, Optional
+import logging
+# settings import
+# force add project root to Python path (outermost task_scheduler)
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, PROJECT_ROOT)
+
 from app.core.config import settings
 from app.core.database import redis_client, get_task_lock, get_mysql_conn
+from app.models.task import get_task_status
+from app.models.task_payload import get_task_payload
 from app.core.utils import call_api_with_retry, update_task_status
 from app.core.prompt import (
     PERSONALITY_PROMPT,
@@ -16,30 +28,35 @@ from app.core.prompt import (
     KEYWORD_2026_PROMPT,
     ROAST_THUMB_PROMPT
 )
-
-# settings import
-# force add project root to Python path (outermost task_scheduler)
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, PROJECT_ROOT)
-
-
-
-def request_llm_api(task_id, prompt, sample_texts): 
-    api_url = settings.BROWSE_ANALYSIS_API_URL
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+logger = logging.getLogger("analyz_worker")
+async def _call_llm(prompt: str, sample_texts: List[str]) -> str:
     api_key = settings.OPENROUTER_API_KEY
-    model = settings.OPENROUTER_MODEL
-
-    messages = [
-        {"role": "system", "content": prompt},
-        {"role": "user", "content": "\n".join(sample_texts[:20])},
-    ]
-    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-    body={"model": model, "messages": messages, "temperature": 0.7},
-    try:
-        result = call_api_with_retry("browse_analysis", task_id, api_url, body, headers)
-        return "success", result, ""
-    except Exception as e:
-        return "timeout" if "timeout" in str(e) else "failed", {}, str(e)
+    model =settings.OPENROUTER_MODEL
+    api_url = settings.OPENROUTER_URL
+    if not api_key or not model:
+        return ""
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        messages = [
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": "\n".join(sample_texts[:20])},
+        ]
+        backoff = 1.0
+        for _ in range(3):
+            try:
+                resp = await client.post(
+                    api_url,
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                    json={"model": model, "messages": messages, "temperature": 0.7},
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    return data["choices"][0]["message"]["content"].strip()
+            except Exception:
+                pass
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 4.0)
+    return ""
 # analyze browse records
 async def analyze_browse_records(task_id, user_id, sample_texts):
     api_url = settings.BROWSE_ANALYSIS_API_URL
@@ -58,59 +75,82 @@ async def analyze_browse_records(task_id, user_id, sample_texts):
     ]
     payload = {}
     for field, prompt, task_name in prompts:
-        result = await request_llm_api(task_id, prompt, sample_texts)
+        content = await _call_llm(prompt, sample_texts)
         if task_name == "llm_brainrot":
             try:
-                payload[field] = max(0, min(100, int(float(result.strip().split()[0]))))
-            except Exception:
-                return False
+                payload[field] = max(0, min(100, int(float(content.strip().split()[0]))))
+            except Exception as e:
+                logging.error(f"llm_brainrot error", e)
+                return "failed", payload, ""
         elif task_name == "llm_niche_journey":
             parsed = []
             try:
-                import json
-
-                parsed = json.loads(result)
+                pattern = r'^```json\s*(.*?)\s*```$'
+                match = re.search(pattern, content, re.DOTALL)
+                if match:
+                    pure_json_str = match.group(1)
+                    parsed = json.loads(pure_json_str)
+                else:
+                    parsed = json.loads(content)
+             
                 if not isinstance(parsed, list):
-                    return False
-            except Exception:
-                return False
+                    return "failed", payload, "not list"
+            except Exception as e:
+                logging.error(f"llm_niche_journey error", e)
+                return "failed", payload, ""
             payload[field] = parsed[:5]
         elif task_name == "llm_top_niche_percentile":
             try:
-                import json
-
-                data = json.loads(result)
-                if isinstance(data, dict):
-                    tn = data.get("top_niches")
+                pattern = r'^```json\s*(.*?)\s*```$'
+                match = re.search(pattern, content, re.DOTALL)
+                if match:
+                    pure_json_str = match.group(1)
+                    parsed = json.loads(pure_json_str)
+                else:
+                    parsed = json.loads(content)
+                if isinstance(parsed, dict):
+                    tn = parsed.get("top_niches")
                     if not isinstance(tn, list):
                         return False
                     payload["top_niches"] = [str(x).strip() for x in tn if str(x).strip()]
-                    pct = data.get("top_niche_percentile")
+                    pct = parsed.get("top_niche_percentile")
                     if not pct:
                         return False
                     payload["top_niche_percentile"] = str(pct).strip()
                 else:
-                    return False
-            except Exception:
-                return False
+                    logging.error(f"llm_top_niche_percentile error", e)
+                    return "failed", payload, ""
+            except Exception as e:
+                logging.error(f"llm_top_niche_percentile error", e)
+                return "failed", payload, ""
         elif task_name == "llm_personality":
-            if not result:
-                return False
-            payload[field] = result.strip().split()[0].lower().replace(" ", "_")
+            if not content:
+                logging.error(f"llm_personality not content error")
+                return "failed", payload, ""
+            payload[field] = content.strip().split()[0].lower().replace(" ", "_")
         elif task_name == "llm_keyword_2026":
-            if not result:
-                return False
-            payload[field] = result.strip().splitlines()[0]
+            if not content:
+                logging.error(f"llm_keyword_2026 not content error")
+                return "failed", payload, ""
+            payload[field] = content.strip().splitlines()[0]
         else:
-            payload[field] = result
+            payload[field] = content
     return "success", payload, ""
 
 # process analyze task
-def process_analyze_task(task_data):
+async def process_analyze_task(task_data):
     task_id = task_data["task_id"]
-    sample_texts = task_data.get("sample_texts", [])
     user_id = task_data.get("user_id")
 
+    # check task status
+    task = get_task_status(task_id)
+    task_payload = get_task_payload(task_id)
+    if not task or not task_payload:
+        print(f"task:{task_id} is not exist, skip")
+        return 
+
+    payload = task_payload['payload']
+    sample_texts = payload['_sample_texts']
     # get distributed lock
     lock = get_task_lock(task_id)
     if not lock.acquire(blocking=False):
@@ -119,13 +159,7 @@ def process_analyze_task(task_data):
 
     try:
         # check task status
-        conn = get_mysql_conn()
-        with conn.cursor() as cursor:
-            cursor.execute("""
-                SELECT status, user_id, collect_status FROM tasks WHERE task_id = %s
-            """, (task_id,))
-            task = cursor.fetchone()
-        conn.close()
+        task = get_task_status(task_id)
 
         if task["status"] in ["paused", "cancelled"]:
             print(f"task:{task_id}status is {task['status']}, stop analysis")
@@ -154,7 +188,7 @@ def process_analyze_task(task_data):
             return
 
         # analyze browse records
-        analysis_status, analysis_result, analysis_error = analyze_browse_records(task_id, task["user_id"], sample_texts)
+        analysis_status, analysis_result, analysis_error = await analyze_browse_records(task_id, user_id, sample_texts)
         if analysis_status != "success":
             update_task_status(
                 task_id, "failed",
@@ -168,10 +202,10 @@ def process_analyze_task(task_data):
         update_task_status(
             task_id, "completed",
             analysis_status="success",
-            analysis_result=analysis_result
+            analysis_result=json.dumps(analysis_result)
         )
         redis_client.lpush(settings.TASK_QUEUE_EMAIL_SEND, json.dumps({
-                "task_id": task_id, "user_id": user_id
+            "task_id": task_id, "user_id": user_id
         }))
         print(f"task {task_id} analysis completed")
     except Exception as e:
@@ -181,8 +215,8 @@ def process_analyze_task(task_data):
         lock.release()
 
 # analyze worker main loop
-def analyze_worker(worker_id):
-    print(f"analyze Worker {worker_id} started")
+async def analyze_worker():
+    print(f"analyze Worker  started")
     analyze_queue = settings.TASK_QUEUE_ANALYZE
     retry_queue = settings.TASK_QUEUE_RETRY
 
@@ -201,24 +235,25 @@ def analyze_worker(worker_id):
                 task_data = {"task_id": task_data["task_id"]}
 
             # process analyze task
-            process_analyze_task(task_data)
+            await process_analyze_task(task_data)
         except Exception as e:
-            print(f"analyze Worker {worker_id} 异常: {e}")
+            print(f"analyze Worker error: {e}")
         time.sleep(0.1)
 
 if __name__ == "__main__":
     # start multiple analyze workers
     worker_num = settings.WORKER_ANALYZE_NUM
     processes = []
-    for i in range(worker_num):
-        p = multiprocessing.Process(target=analyze_worker, args=(i+1,))
-        p.start()
-        processes.append(p)
+    asyncio.run( analyze_worker())
+    # for i in range(worker_num):
+    #     p = multiprocessing.Process(target=analyze_worker, args=(i+1,))
+    #     p.start()
+    #     processes.append(p)
 
-    try:
-        for p in processes:
-            p.join()
-    except KeyboardInterrupt:
-        print("\nstop analyze workers...")
-        for p in processes:
-            p.terminate()
+    # try:
+    #     for p in processes:
+    #         p.join()
+    # except KeyboardInterrupt:
+    #     print("\nstop analyze workers...")
+    #     for p in processes:
+    #         p.terminate()

@@ -55,6 +55,8 @@ class Emailer:
                 )
                 return resp
             except (BotoCoreError, ClientError):
+                print(ClientError)
+                print(BotoCoreError)
                 if attempts >= 3:
                     return None
                 time.sleep(backoff)

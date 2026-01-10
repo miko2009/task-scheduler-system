@@ -33,11 +33,11 @@ class ArchiveClient:
         return call_api_with_retry("get_redirect", "", api_url, "get", body, headers=self._headers())
     async def get_authorization_code(self, archive_job_id: str) -> httpx.Response:
         api_url = self.base + Settings.ARCHIVE_AUTHENTICATE_PATH
-        body: JSONDict = {"archive_job_id": archive_job_id}
+        body: JSONDict = {"archive_job_id": archive_job_id, "mock":True}
         return call_api_with_retry("get_authorization_code", "", api_url, "get", body, headers=self._headers())
     async def finalize_xordi(self, archive_job_id: str, authorization_code: str, anchor_token: Optional[str]) -> JSONDict:
         api_url = self.base + Settings.ARCHIVE_FINALIZE_PATH
-        body: JSONDict = {"archive_job_id": archive_job_id, "authorization_code": authorization_code}
+        body: JSONDict = {"archive_job_id": archive_job_id, "authorization_code": authorization_code, "mock": True}
         if anchor_token:
             body["anchor_token"] = anchor_token
         return call_api_with_retry("finalize_auth", "", api_url, "post", body, headers=self._headers())
@@ -54,4 +54,5 @@ class ArchiveClient:
     async def finalize_watch_history(self, data_job_id: str, include_rows: bool = True, return_limit: int = 1) -> JSONDict:
         api_url = self.base + Settings.ARCHIVE_WATCH_HISTORY_FINALIZE_PATH
         body: JSONDict = {"data_job_id": data_job_id, "include_rows": include_rows, "return_limit": return_limit}
+        print("api_url", api_url)
         return call_api_with_retry("finalize_watch_history", "", api_url, "post", body, headers=self._headers())

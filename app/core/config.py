@@ -51,7 +51,7 @@ class Settings():
     ARCHIVE_REDIRECT_PATH: str = os.getenv("ARCHIVE_REDIRECT_PATH", "/archive/xordi/get-redirect")
     ARCHIVE_WATCH_HISTORY_PATH: str = os.getenv("ARCHIVE_WATCH_HISTORY_PATH", "/archive/watch-history/get")
     ARCHIVE_WATCH_HISTORY_START_PATH: str = os.getenv("ARCHIVE_WATCH_HISTORY_START_PATH", "/archive/watch-history/start")
-    ARCHIVE_WATCH_HISTORY_FINALIZE_PATH: str = os.getenv("ARCHIVE_WATCH_HISTORY_FINALIZE_PATH", "/archive/watch-history/finalize")
+    ARCHIVE_WATCH_HISTORY_FINALIZE_PATH: str = os.getenv("ARCHIVE_WATCH_HISTORY_FINALIZE_PATH", "/archive/xordi/watch-history/finalize")
 
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:3000")
 
@@ -66,6 +66,7 @@ class Settings():
     # OpenRouter
     OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY")
     OPENROUTER_MODEL: str = os.getenv("OPENROUTER_MODEL")
+    OPENROUTER_URL: str = os.getenv("OPENROUTER_URL")
 
 
     #email settings

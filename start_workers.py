@@ -11,9 +11,10 @@ def main():
     print("=== Worker start ===")
     base_path = BASE_DIR
     worker_paths = [
-         ("region-Worker", os.path.join(base_path, "app/workers/verify_worker.py")),
-         ("collection-Worker", os.path.join(base_path, "app/workers/collect_worker.py")),
-         ("analyze-Worker", os.path.join(base_path, "app/workers/analyze_worker.py"))
+        ("region-Worker", os.path.join(base_path, "app/workers/verify_worker.py")),
+        ("collection-Worker", os.path.join(base_path, "app/workers/collect_worker.py")),
+        ("analyze-Worker", os.path.join(base_path, "app/workers/analyze_worker.py")),
+        ("email-send-Worker", os.path.join(base_path, "app/workers/email_worker.py"))
      ]
 
     processes = []

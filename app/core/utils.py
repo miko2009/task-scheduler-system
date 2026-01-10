@@ -113,6 +113,8 @@ def call_api_with_retry(api_type, task_id, url, method="GET",  params = None, he
             if method.lower() == "get":
                 response = requests.get(url, params, headers=headers, timeout=timeout)
             else:
+                print("params", params)
+                print('url', url)
                 response = requests.post(url, json=params, headers=headers, timeout=timeout)
             response_code = response.status_code
             response_data = response.json()
@@ -122,7 +124,7 @@ def call_api_with_retry(api_type, task_id, url, method="GET",  params = None, he
                 error_detail = f"status code: {response.status_code}, content: {response.text}"
                 raise Exception(error_detail)
 
-            return response_data, response.status_code
+            return response_data, response_code
        
         except requests.exceptions.Timeout:
             status = "timeout"

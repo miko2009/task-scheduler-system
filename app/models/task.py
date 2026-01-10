@@ -123,9 +123,9 @@ def update_task_email_status(task_id: str, status: str):
     try:
         conn = get_mysql_conn()
         with conn.cursor() as cursor:
-            sql = "UPDATE tasks SET email_status = %s WHERE task_id = %s"
-            params = [status, task_id]
-            cursor.execute(sql, tuple(params))
+            cursor.execute("""
+                UPDATE tasks SET email_status = %s WHERE task_id = %s
+            """, (status, task_id))
         conn.commit()
     except Exception as e:
         print(f"update task email status failed: {e}")

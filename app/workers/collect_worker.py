@@ -134,7 +134,7 @@ async def _fetch_month(sec_user_id: str, month_start_ms: int, month_end_ms: int)
             return rows
         before = None
         while True:
-            resp, status_code = await archive_client.get_watch_history(sec_user_id=sec_user_id, limit=9, before=before)
+            resp, status_code = await archive_client.get_watch_history(sec_user_id=sec_user_id, limit=900, before=before)
             if not resp or "rows" not in resp:
                 break
             batch = resp.get("rows") or []

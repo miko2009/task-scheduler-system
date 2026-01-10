@@ -268,28 +268,30 @@ async def wrapped_request(
     payload: WrappedRequest, session=Depends(require_session)
 ) -> WrappedEnqueueResponse:
     
-    user = get_user(payload.app_user_id)
-    if not user or not user.latest_sec_user_id:
+    app_user_id = session.get("app_user_id")
+    user = get_user(app_user_id)
+    if not user or not user.get('latest_sec_user_id'):
         raise HTTPException(status_code=400, detail="sec_user_id_required")
-    user.time_zone = payload.time_zone
+    user['time_zone'] = payload.time_zone
 
+    is_watch_history_available = user.get('is_watch_history_available')
     # Enforce availability gating with cached value or a fresh check.
-    if user.is_watch_history_available == "unknown":
-        availability, _, _ = await verify_user_region(user, auto_enqueue=True)
+    if is_watch_history_available == "unknown":
+        availability, _, _ = await verify_user_region(user, None, auto_enqueue=True)
     else:
-        availability = user.is_watch_history_available
+        availability = is_watch_history_available
     if availability == "no":
         raise HTTPException(status_code=400, detail="watch_history_unavailable")
     if availability == "unknown":
         raise HTTPException(status_code=400, detail="watch_history_unknown")
 
 
-    task = get_task_by_user_id(payload.app_user_id)
+    task = get_task_by_user_id(app_user_id)
     redis_client.lpush(settings.TASK_QUEUE_RETRY, json.dumps({
-        "task_id": task.task_id, "retry_type": "collect"
+        "task_id": task.get('task_id'), "retry_type": "collect"
     }))
 
-    if task.status == "ready" and task.payload:
+    if task.get('status') == "ready":
         return WrappedEnqueueResponse(
             status="ready",
             wrapped_run_id=task.task_id,
@@ -302,7 +304,7 @@ async def wrapped_request(
 
     return WrappedEnqueueResponse(
         status="pending",
-        wrapped_run_id=task.task_id,
+        wrapped_run_id=task.get('task_id'),
         email_delivery="queued",
         queue_position=None,
         queue_eta_seconds=None,

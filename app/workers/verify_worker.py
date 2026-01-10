@@ -3,7 +3,10 @@ import time
 import multiprocessing
 import os
 import sys
-
+# settings import
+# force add project root to Python path (outermost task_scheduler)
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, PROJECT_ROOT)
 from app.core.config import settings
 from app.core.database import redis_client, get_task_lock, get_mysql_conn
 from app.core.utils import update_task_status, call_api_with_retry
@@ -11,10 +14,7 @@ from app.models.task import update_verify_task_status
 from app.core.archive_client import ArchiveClient
 from app.models.user import get_user
 
-# settings import
-# force add project root to Python path (outermost task_scheduler)
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, PROJECT_ROOT)
+
 archive_client = ArchiveClient()
 
 # verify user region
@@ -31,7 +31,7 @@ def verify_user_region(task_id, user_id, ip_address):
     # call finalize watch history API
     try:
         result = archive_client.finalize_watch_history(data_job_id=start_resp.get("data_job_id"), include_rows=True, return_limit=1)
-        user.is_watch_history_available = "yes"
+        user['is_watch_history_available'] = "yes"
     except Exception as e:
         return "timeout" if "timeout" in str(e) else "failed", {}, str(e)
     return "success", result

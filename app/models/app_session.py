@@ -55,7 +55,6 @@ def create_or_rotate(app_user_id: str, device_id: str, platform: str, app_versio
 
 def validate(token: str, device_id: str) -> dict:
     token_hash = hashlib.sha256(token.encode()).hexdigest()
-  
     try:
         conn = get_mysql_conn()
         with conn.cursor() as cursor:
@@ -67,13 +66,13 @@ def validate(token: str, device_id: str) -> dict:
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_session")
 
             # sliding TTL
-            rec.expires_at = datetime.now(timezone.utc) + timedelta(days=Settings.SESSION_TTL_DAYS)
+            rec['expires_at'] = datetime.now(timezone.utc) + timedelta(days=Settings.SESSION_TTL_DAYS)
             with conn.cursor() as cursor:
                 cursor.execute("""
                     UPDATE app_sessions
-                    SET expires_at = %s, updated_at = %s
+                    SET expires_at = %s
                     WHERE session_id = %s
-                """, (rec.expires_at, datetime.now(timezone.utc), rec["session_id"]))
+                """, (rec['expires_at'], rec["session_id"]))
         conn.commit()
     except Exception as e:
         print(f"validate session failed: {e}")
